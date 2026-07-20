@@ -28,7 +28,7 @@ jobs:
 
       - name: Setup proxy
         id: proxy
-        uses: ./.github/actions/setup-proxy
+        uses: alphaxcv/proxy_sb@1.0
         with:
           node_link: ${{ secrets.NODE_LINK }}
 
