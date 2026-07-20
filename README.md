@@ -46,7 +46,7 @@ jobs:
 ```yaml
       - name: Setup proxy
         id: proxy
-        uses: alphaxcv/proxy
+        uses: your-org/actions-lib/setup-proxy-action@main
         with:
           node_link: ${{ secrets.NODE_LINK }}
 ```
