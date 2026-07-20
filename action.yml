@@ -1,0 +1,45 @@
+name: 'Setup Multi-Protocol Proxy (sing-box)'
+description: >
+  解析 vless/vmess/trojan/hysteria2/tuic/anytls/socks5 节点链接，
+  启动本地 sing-box 作为 SOCKS5/HTTP 代理，供后续步骤使用。
+  仅支持 Linux (amd64/arm64/386/armv7/s390x) runner。
+
+inputs:
+  node_link:
+    description: >
+      代理节点链接，例如 vless://uuid@host:port?...
+      为空时跳过代理设置（直连模式）。
+    required: false
+    default: ''
+  singbox_version:
+    description: '指定 sing-box 版本（不填则自动获取最新稳定版）'
+    required: false
+    default: ''
+
+outputs:
+  is_proxy:
+    description: "'true' 表示代理已成功启动并可用，'false' 表示直连或代理失败"
+    value: ${{ steps.run.outputs.is_proxy }}
+  proxy_server:
+    description: "代理地址，例如 socks5://127.0.0.1:1080（仅 is_proxy=true 时有值）"
+    value: ${{ steps.run.outputs.proxy_server }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check Python
+      shell: bash
+      run: |
+        if ! command -v python3 &>/dev/null; then
+          echo "python3 not found on runner" >&2
+          exit 1
+        fi
+
+    - name: Run setup_proxy.py
+      id: run
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        NODE_LINK: ${{ inputs.node_link }}
+        SINGBOX_VERSION: ${{ inputs.singbox_version }}
+      run: python3 "${{ github.action_path }}/setup_proxy.py"
