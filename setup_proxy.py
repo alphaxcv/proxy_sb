@@ -96,6 +96,19 @@ def parse_query(qs: str) -> dict:
     parsed = parse_qs(qs, keep_blank_values=True)
     return {k: unquote(v[0]) for k, v in parsed.items()}
 
+# 默认 uTLS 指纹。
+#
+# 之前默认用 "chrome"（对应 utls 的 HelloChrome_Auto，即"最新 Chrome"）。
+# 目前 sing-box 1.14.0 打包的 utls 版本里，这个"最新 Chrome"预设已经带上了
+# Chrome 现在默认启用的后量子混合密钥交换（X25519MLKEM768）。但同一版本里
+# 负责真正握手的底层 TLS 栈还没完全跟上这个新曲线 ID，于是在本地建连阶段
+# 就直接报 "tls: CurvePreferences includes unsupported curve"——不需要
+# 服务端响应，纯本地校验失败，所以重试多少次都一样，100% 必现。
+# 官方 GitHub 上能查到同类报告（chrome_pq 预设的类似问题），firefox/edge
+# 等预设不带这个新曲线，握手是正常的。所以把默认指纹换成 "firefox"。
+# 如果你的节点链接里显式带了 fp= 参数，这里不受影响，照样用你指定的值。
+DEFAULT_FINGERPRINT = "firefox"
+
 def parse_vless(link: str) -> dict:
     u = urlparse(link)
     q = parse_query(u.query)
@@ -115,7 +128,7 @@ def parse_vless(link: str) -> dict:
         "host": q.get("host") or server,
         "security": q.get("security", "none"),
         "sni": q.get("sni") or server,
-        "fingerprint": q.get("fp", "chrome") or "chrome",
+        "fingerprint": q.get("fp", DEFAULT_FINGERPRINT) or DEFAULT_FINGERPRINT,
         "reality_pbk": q.get("pbk", ""),
         "reality_sid": q.get("sid", ""),
         "insecure": insecure,
@@ -141,7 +154,7 @@ def parse_vmess(link: str) -> dict:
         "host": decoded.get("host") or server,
         "security": decoded.get("tls", ""),
         "sni": decoded.get("sni") or server,
-        "fingerprint": decoded.get("fp", "chrome") or "chrome",
+        "fingerprint": decoded.get("fp", DEFAULT_FINGERPRINT) or DEFAULT_FINGERPRINT,
         "insecure": False,
     }
 
@@ -164,7 +177,7 @@ def parse_trojan(link: str) -> dict:
         "host": q.get("host") or server,
         "security": security,
         "sni": q.get("sni") or q.get("peer") or server,
-        "fingerprint": q.get("fp", "chrome") or "chrome",
+        "fingerprint": q.get("fp", DEFAULT_FINGERPRINT) or DEFAULT_FINGERPRINT,
         "insecure": insecure,
     }
 
@@ -298,7 +311,7 @@ def build_outbound(node: dict) -> dict:
                 "enabled": True,
                 "server_name": node.get("sni", ""),
                 "insecure": node.get("insecure", False),
-                "utls": {"enabled": True, "fingerprint": node.get("fingerprint", "chrome")},
+                "utls": {"enabled": True, "fingerprint": node.get("fingerprint", DEFAULT_FINGERPRINT)},
             }
             if node.get("security") == "reality":
                 tls["reality"] = {
@@ -319,7 +332,7 @@ def build_outbound(node: dict) -> dict:
                 "enabled": True,
                 "server_name": node.get("sni", ""),
                 "insecure": node.get("insecure", False),
-                "utls": {"enabled": True, "fingerprint": node.get("fingerprint", "chrome")},
+                "utls": {"enabled": True, "fingerprint": node.get("fingerprint", DEFAULT_FINGERPRINT)},
             }
 
     elif t == "trojan":
@@ -331,7 +344,7 @@ def build_outbound(node: dict) -> dict:
                 "enabled": True,
                 "server_name": node.get("sni", ""),
                 "insecure": node.get("insecure", False),
-                "utls": {"enabled": True, "fingerprint": node.get("fingerprint", "chrome")},
+                "utls": {"enabled": True, "fingerprint": node.get("fingerprint", DEFAULT_FINGERPRINT)},
             }
 
     elif t == "shadowsocks":
