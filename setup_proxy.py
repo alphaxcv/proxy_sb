@@ -148,7 +148,6 @@ def parse_vmess(link: str) -> dict:
 PARSERS = {
     "vless": parse_vless,
     "vmess": parse_vmess,
-    # 如果还需要 trojan/tuic 等解析可以完整保留你原来的解析器映射
 }
 
 def build_outbound(node: dict) -> dict:
@@ -158,14 +157,13 @@ def build_outbound(node: dict) -> dict:
         "tag": "proxy",
         "server": node["server"],
         "server_port": int(node["server_port"]),
-        "domain_strategy": "ipv4_only", # 关键修复1：强迫 DNS 走 IPv4，避免 GitHub Actions IPv6 连通性导致 empty result
+        "domain_strategy": "ipv4_only",
     }
 
     if t == "vless":
         ob["uuid"] = node["uuid"]
         if node.get("flow"): ob["flow"] = node["flow"]
         
-        # 组装传输层 (WebSocket 等)
         if node.get("transport_type", "tcp") != "tcp":
             ob["transport"] = {
                 "type": node["transport_type"],
@@ -174,7 +172,6 @@ def build_outbound(node: dict) -> dict:
             if node.get("host"):
                 ob["transport"]["headers"] = {"Host": node["host"]}
 
-        # 组装 TLS
         tls_enabled = node.get("security") in ("tls", "reality")
         if tls_enabled:
             tls = {
@@ -211,7 +208,6 @@ def build_outbound(node: dict) -> dict:
                 "utls": {"enabled": True, "fingerprint": node.get("fingerprint", "chrome")},
             }
             
-    # （这里补充其他协议的构建代码即可）
     return ob
 
 # --------------------------------------------------------------------------
@@ -220,11 +216,11 @@ def build_outbound(node: dict) -> dict:
 def build_config(outbound: dict) -> dict:
     return {
         "log": {"level": "warn"},
-        # 关键修复2：提供内置 DNS 解析模块并设置 IPv4 优先
+        # 兼容 sing-box 1.14.0 的 DNS 配置
         "dns": {
             "servers": [
-                {"tag": "google", "address": "8.8.8.8", "detour": "direct"},
-                {"tag": "cloudflare", "address": "1.1.1.1", "detour": "direct"}
+                {"tag": "google", "address": "8.8.8.8"},
+                {"tag": "cloudflare", "address": "1.1.1.1"}
             ],
             "strategy": "ipv4_only"
         },
@@ -234,7 +230,7 @@ def build_config(outbound: dict) -> dict:
         ],
         "outbounds": [
             outbound,
-            {"type": "direct", "tag": "direct"}, # 关键修复3：必须有 direct 出站兜底，否则 DNS 和系统请求无法发出
+            {"type": "direct", "tag": "direct"},
             {"type": "block", "tag": "block"}
         ]
     }
@@ -253,7 +249,6 @@ def start_singbox() -> subprocess.Popen:
 def test_proxy() -> bool:
     log("[INFO] 测试代理连接...")
     for i in range(1, 4):
-        # 关键修复4：使用 http 代理 (或 socks5h)，强迫由代理节点远端去解析 api.ipify.org 的真实 IP
         result = subprocess.run(
             ["curl", "-x", "http://127.0.0.1:1081", "-s", "--max-time", "15", "https://api.ipify.org"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -291,7 +286,7 @@ def main() -> None:
     if test_proxy():
         log("[INFO] ✓ 代理连接成功")
         write_result("IS_PROXY", "true")
-        write_result("PROXY_SERVER", "http://127.0.0.1:1081") # 导出 HTTP 代理更具兼容性
+        write_result("PROXY_SERVER", "http://127.0.0.1:1081")
         return
 
     log("[ERROR] ✗ 代理连接失败\n---- sing-box 日志 ----")
