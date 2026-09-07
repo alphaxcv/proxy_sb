@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 setup_proxy.py - 自适应多协议代理节点解析并启动 sing-box (严格匹配 v1.14.0 官方 Schema)
+
+支持协议: vless, vmess, trojan, shadowsocks (ss://), hysteria2 (hysteria2:// / hy2://), tuic
 """
 
 import base64
@@ -143,9 +145,117 @@ def parse_vmess(link: str) -> dict:
         "insecure": False,
     }
 
+def parse_trojan(link: str) -> dict:
+    u = urlparse(link)
+    q = parse_query(u.query)
+    insecure = q.get("allowInsecure", "").lower() in ("1", "true") or q.get("insecure", "").lower() in ("1", "true")
+    server = u.hostname
+    # trojan 默认就是跑在 TLS 上的（这是它的协议设计前提），只有显式
+    # security=none 才当作明文 trojan-go 处理。
+    security = q.get("security", "tls") or "tls"
+    return {
+        "type": "trojan",
+        "server": server,
+        "server_port": u.port or 443,
+        "password": unquote(u.username or ""),
+        "transport_type": q.get("type", "tcp") or "tcp",
+        "path": q.get("path", "/") or "/",
+        "service_name": q.get("serviceName", "") or q.get("path", "").lstrip("/"),
+        "host": q.get("host") or server,
+        "security": security,
+        "sni": q.get("sni") or q.get("peer") or server,
+        "fingerprint": q.get("fp", "chrome") or "chrome",
+        "insecure": insecure,
+    }
+
+def parse_shadowsocks(link: str) -> dict:
+    u = urlparse(link)
+    q = parse_query(u.query)
+    server = u.hostname
+    server_port = u.port
+    method = password = None
+
+    if server and u.username and u.password is None:
+        # SIP002: ss://BASE64(method:password)@server:port
+        try:
+            decoded = b64_decode(u.username).decode("utf-8")
+            method, password = decoded.split(":", 1)
+        except Exception:
+            pass
+    elif server and u.username and u.password is not None:
+        # 极少数客户端会直接明文写 method:password（未 base64）
+        method, password = unquote(u.username), unquote(u.password)
+
+    if method is None:
+        # 旧式格式: ss://BASE64(method:password@server:port)
+        raw = link[len("ss://"):].split("#", 1)[0].split("?", 1)[0]
+        try:
+            decoded = b64_decode(raw).decode("utf-8")
+            creds, hostport = decoded.rsplit("@", 1)
+            method, password = creds.split(":", 1)
+            server, server_port = hostport.rsplit(":", 1)
+        except Exception:
+            log("[ERROR] Shadowsocks 链接解析失败")
+            sys.exit(1)
+
+    if not (method and password and server and server_port):
+        log("[ERROR] Shadowsocks 链接缺少必要字段")
+        sys.exit(1)
+
+    return {
+        "type": "shadowsocks",
+        "server": server,
+        "server_port": int(server_port),
+        "method": method,
+        "password": password,
+        "plugin": q.get("plugin", ""),
+        "plugin_opts": q.get("plugin-opts", ""),
+    }
+
+def parse_hysteria2(link: str) -> dict:
+    u = urlparse(link)
+    q = parse_query(u.query)
+    insecure = q.get("insecure", "").lower() in ("1", "true") or q.get("allowInsecure", "").lower() in ("1", "true")
+    server = u.hostname
+    return {
+        "type": "hysteria2",
+        "server": server,
+        "server_port": u.port or 443,
+        "password": unquote(u.username or ""),
+        "sni": q.get("sni") or q.get("peer") or server,
+        "insecure": insecure,
+        "obfs_type": q.get("obfs", ""),
+        "obfs_password": q.get("obfs-password", "") or q.get("obfs_password", ""),
+    }
+
+def parse_tuic(link: str) -> dict:
+    u = urlparse(link)
+    q = parse_query(u.query)
+    insecure = q.get("allow_insecure", "").lower() in ("1", "true") or q.get("insecure", "").lower() in ("1", "true")
+    server = u.hostname
+    alpn_raw = q.get("alpn", "h3")
+    alpn_list = [a for a in alpn_raw.split(",") if a] or ["h3"]
+    return {
+        "type": "tuic",
+        "server": server,
+        "server_port": u.port or 443,
+        "uuid": unquote(u.username or ""),
+        "password": unquote(u.password or ""),
+        "congestion_control": q.get("congestion_control", "bbr") or "bbr",
+        "udp_relay_mode": q.get("udp_relay_mode", "native") or "native",
+        "sni": q.get("sni") or server,
+        "insecure": insecure,
+        "alpn_list": alpn_list,
+    }
+
 PARSERS = {
     "vless": parse_vless,
     "vmess": parse_vmess,
+    "trojan": parse_trojan,
+    "ss": parse_shadowsocks,
+    "hysteria2": parse_hysteria2,
+    "hy2": parse_hysteria2,
+    "tuic": parse_tuic,
 }
 
 def build_outbound(node: dict) -> dict:
@@ -212,6 +322,54 @@ def build_outbound(node: dict) -> dict:
                 "utls": {"enabled": True, "fingerprint": node.get("fingerprint", "chrome")},
             }
 
+    elif t == "trojan":
+        ob["password"] = node["password"]
+        apply_transport()
+        # trojan 只有显式 security=none 才不套 TLS
+        if node.get("security", "tls") != "none":
+            ob["tls"] = {
+                "enabled": True,
+                "server_name": node.get("sni", ""),
+                "insecure": node.get("insecure", False),
+                "utls": {"enabled": True, "fingerprint": node.get("fingerprint", "chrome")},
+            }
+
+    elif t == "shadowsocks":
+        ob["method"] = node["method"]
+        ob["password"] = node["password"]
+        if node.get("plugin"):
+            ob["plugin"] = node["plugin"]
+            if node.get("plugin_opts"):
+                ob["plugin_opts"] = node["plugin_opts"]
+
+    elif t == "hysteria2":
+        ob["password"] = node["password"]
+        if node.get("obfs_password"):
+            ob["obfs"] = {
+                "type": node.get("obfs_type") or "salamander",
+                "password": node["obfs_password"],
+            }
+        # hysteria2 的 tls 是必填字段，没有就直接 schema 校验失败
+        ob["tls"] = {
+            "enabled": True,
+            "server_name": node.get("sni", ""),
+            "insecure": node.get("insecure", False),
+        }
+
+    elif t == "tuic":
+        ob["uuid"] = node["uuid"]
+        if node.get("password"):
+            ob["password"] = node["password"]
+        ob["congestion_control"] = node.get("congestion_control", "bbr")
+        ob["udp_relay_mode"] = node.get("udp_relay_mode", "native")
+        # tuic 的 tls 同样必填
+        ob["tls"] = {
+            "enabled": True,
+            "server_name": node.get("sni", ""),
+            "insecure": node.get("insecure", False),
+            "alpn": node.get("alpn_list", ["h3"]),
+        }
+
     return ob
 
 def build_config(outbound: dict) -> dict:
@@ -277,7 +435,7 @@ def main() -> None:
     proto = node_link.split("://", 1)[0].lower()
     parser = PARSERS.get(proto)
     if not parser:
-        log(f"[ERROR] 不支持的协议: {proto}")
+        log(f"[ERROR] 不支持的协议: {proto}，目前支持: {', '.join(sorted(set(PARSERS)))}")
         sys.exit(1)
 
     node = parser(node_link)
