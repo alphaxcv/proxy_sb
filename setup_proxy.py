@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-setup_proxy.py - 自适应多协议代理节点解析并启动 sing-box (严格适配 v1.14.0 官方最新 Schema)
+setup_proxy.py - 自适应多协议代理节点解析并启动 sing-box (严格匹配 v1.14.0 官方 Schema)
 """
 
 import base64
@@ -78,7 +78,12 @@ def download_singbox(version: str, arch: str) -> None:
     log(f"[INFO] 下载 {url}")
     urllib.request.urlretrieve(url, fname)
     with tarfile.open(fname) as tar:
-        tar.extractall(filter="data")
+        # filter="data" 是 Python 3.12 才加入的参数，老版本 Python（如 Ubuntu 22.04
+        # 自带的 3.10）传这个参数会直接 TypeError，导致整个脚本崩溃。做兼容判断。
+        try:
+            tar.extractall(filter="data")
+        except TypeError:
+            tar.extractall()
     extracted_dir = f"sing-box-{version}-linux-{arch}"
     shutil.move(os.path.join(extracted_dir, "sing-box"), "./sing-box")
     os.remove(fname)
@@ -102,6 +107,9 @@ def parse_vless(link: str) -> dict:
         "flow": q.get("flow", ""),
         "transport_type": q.get("type", "tcp") or "tcp",
         "path": q.get("path", "/") or "/",
+        # gRPC 的服务名是单独的 query key（Xray 用 serviceName），不是 path。
+        # 之前代码把它俩混为一谈，gRPC 节点必然连不上。
+        "service_name": q.get("serviceName", "") or q.get("path", "").lstrip("/"),
         "host": q.get("host") or server,
         "security": q.get("security", "none"),
         "sni": q.get("sni") or server,
@@ -127,6 +135,7 @@ def parse_vmess(link: str) -> dict:
         "alter_id": int(decoded.get("aid", 0) or 0),
         "transport_type": decoded.get("net", "tcp") or "tcp",
         "path": (decoded.get("path", "/") or "/").split("?")[0],
+        "service_name": decoded.get("path", "").lstrip("/"),
         "host": decoded.get("host") or server,
         "security": decoded.get("tls", ""),
         "sni": decoded.get("sni") or server,
@@ -146,20 +155,32 @@ def build_outbound(node: dict) -> dict:
         "tag": "proxy",
         "server": node["server"],
         "server_port": int(node["server_port"]),
-        "domain_strategy": "ipv4_only",
     }
+
+    transport_type = node.get("transport_type", "tcp")
+
+    def apply_transport():
+        if transport_type == "tcp":
+            return
+        if transport_type == "grpc":
+            # gRPC transport 用 service_name 字段，不是 path/headers。
+            ob["transport"] = {
+                "type": "grpc",
+                "service_name": node.get("service_name") or "",
+            }
+            return
+        # ws / httpupgrade 等走 path + Host header 的模式
+        ob["transport"] = {
+            "type": transport_type,
+            "path": node.get("path", "/"),
+        }
+        if node.get("host"):
+            ob["transport"]["headers"] = {"Host": node["host"]}
 
     if t == "vless":
         ob["uuid"] = node["uuid"]
         if node.get("flow"): ob["flow"] = node["flow"]
-        
-        if node.get("transport_type", "tcp") != "tcp":
-            ob["transport"] = {
-                "type": node["transport_type"],
-                "path": node.get("path", "/"),
-            }
-            if node.get("host"):
-                ob["transport"]["headers"] = {"Host": node["host"]}
+        apply_transport()
 
         tls_enabled = node.get("security") in ("tls", "reality")
         if tls_enabled:
@@ -180,14 +201,8 @@ def build_outbound(node: dict) -> dict:
     elif t == "vmess":
         ob["uuid"] = node["uuid"]
         ob["security"] = "auto"
-        if node.get("transport_type", "tcp") != "tcp":
-            ob["transport"] = {
-                "type": node.get("transport_type", "tcp"),
-                "path": node.get("path", "/"),
-            }
-            if node.get("host"):
-                ob["transport"]["headers"] = {"Host": node["host"]}
-        
+        apply_transport()
+
         tls_enabled = node.get("security") == "tls"
         if tls_enabled:
             ob["tls"] = {
@@ -196,25 +211,24 @@ def build_outbound(node: dict) -> dict:
                 "insecure": node.get("insecure", False),
                 "utls": {"enabled": True, "fingerprint": node.get("fingerprint", "chrome")},
             }
-            
+
     return ob
 
-# 严格遵循 sing-box 1.14.0 最新 DNS Schema（使用 type: udp 并提供 address 字段）
 def build_config(outbound: dict) -> dict:
     return {
         "log": {"level": "warn"},
+        # sing-box >= 1.14.0: 若 dns.servers 配置了 2 个或以上服务器，
+        # 每个用到域名地址的 outbound 就必须显式指定 domain_resolver（或用
+        # route.default_domain_resolver 兜底），否则启动阶段直接报错 /
+        # 域名解析失败，代理测试必然超时。
+        # 原脚本同时配置了 google + cloudflare 两个 DNS，但既没给 outbound
+        # 加 domain_resolver，也没设置 route.default_domain_resolver ——
+        # 只要节点用的是域名（绝大多数机场/CDN 节点都是），这里就直接炸。
+        # 修复方式：只保留一个 DNS server（走系统解析器），这样按官方文档
+        # domain_resolver 变为可选，不需要节点数量所限的所有 outbound 一一去加。
         "dns": {
             "servers": [
-                {
-                    "tag": "google",
-                    "type": "udp",
-                    "address": "8.8.8.8"
-                },
-                {
-                    "tag": "cloudflare",
-                    "type": "udp",
-                    "address": "1.1.1.1"
-                }
+                {"tag": "local", "type": "local"}
             ],
             "strategy": "ipv4_only"
         },
@@ -287,7 +301,7 @@ def main() -> None:
 
     log("[ERROR] ✗ 代理连接失败\n---- sing-box 日志 ----")
     if os.path.exists("sing-box.log"):
-        with open("sing-box.log", encoding="utf-8", errors="replace") as f: 
+        with open("sing-box.log", encoding="utf-8", errors="replace") as f:
             print(f.read())
     sys.exit(1)
 
