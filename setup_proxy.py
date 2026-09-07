@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-setup_proxy.py - 自适应多协议代理节点解析并启动 sing-box
-
-支持协议: vless, vmess, trojan, hysteria2/hy2, tuic, anytls, socks5/socks
+setup_proxy.py - 自适应多协议代理节点解析并启动 sing-box (严格适配 v1.14.0 官方最新 Schema)
 """
 
 import base64
@@ -17,9 +15,6 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs, unquote
 import shutil
 
-# --------------------------------------------------------------------------
-# 工具函数
-# --------------------------------------------------------------------------
 def log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -58,9 +53,6 @@ def get_arch() -> str:
         sys.exit(1)
     return mapping[m]
 
-# --------------------------------------------------------------------------
-# sing-box 二进制下载
-# --------------------------------------------------------------------------
 FALLBACK_VERSION = "1.14.0"
 
 def get_latest_singbox_version() -> str:
@@ -93,9 +85,6 @@ def download_singbox(version: str, arch: str) -> None:
     shutil.rmtree(extracted_dir, ignore_errors=True)
     os.chmod("./sing-box", 0o755)
 
-# --------------------------------------------------------------------------
-# 协议解析
-# --------------------------------------------------------------------------
 def parse_query(qs: str) -> dict:
     parsed = parse_qs(qs, keep_blank_values=True)
     return {k: unquote(v[0]) for k, v in parsed.items()}
@@ -210,17 +199,22 @@ def build_outbound(node: dict) -> dict:
             
     return ob
 
-# --------------------------------------------------------------------------
-# 主流程
-# --------------------------------------------------------------------------
+# 严格遵循 sing-box 1.14.0 最新 DNS Schema（使用 type: udp 并提供 address 字段）
 def build_config(outbound: dict) -> dict:
     return {
         "log": {"level": "warn"},
-        # 兼容 sing-box 1.14.0 的 DNS 配置
         "dns": {
             "servers": [
-                {"tag": "google", "address": "8.8.8.8"},
-                {"tag": "cloudflare", "address": "1.1.1.1"}
+                {
+                    "tag": "google",
+                    "type": "udp",
+                    "address": "8.8.8.8"
+                },
+                {
+                    "tag": "cloudflare",
+                    "type": "udp",
+                    "address": "1.1.1.1"
+                }
             ],
             "strategy": "ipv4_only"
         },
@@ -268,7 +262,9 @@ def main() -> None:
 
     proto = node_link.split("://", 1)[0].lower()
     parser = PARSERS.get(proto)
-    if not parser: sys.exit(1)
+    if not parser:
+        log(f"[ERROR] 不支持的协议: {proto}")
+        sys.exit(1)
 
     node = parser(node_link)
     outbound = build_outbound(node)
@@ -291,7 +287,8 @@ def main() -> None:
 
     log("[ERROR] ✗ 代理连接失败\n---- sing-box 日志 ----")
     if os.path.exists("sing-box.log"):
-        with open("sing-box.log", encoding="utf-8", errors="replace") as f: print(f.read())
+        with open("sing-box.log", encoding="utf-8", errors="replace") as f: 
+            print(f.read())
     sys.exit(1)
 
 if __name__ == "__main__":
