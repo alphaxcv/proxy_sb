@@ -86,5 +86,5 @@ jobs:
       - uses: your-org/actions-lib/setup-proxy-action@main
         with:
           node_link: ${{ secrets.NODE_LINK }}
-          singbox_version: '1.13.14'
+          SINGBOX_VERSION: '1.13.14'
 ```
