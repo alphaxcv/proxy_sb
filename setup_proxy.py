@@ -9,6 +9,7 @@
 """
 
 import base64
+import ipaddress
 import json
 import os
 import platform
@@ -69,6 +70,17 @@ def write_result(key: str, value: str) -> None:
 def b64_decode(s: str) -> bytes:
     s = s.strip().replace("-", "+").replace("_", "/")
     return base64.b64decode(s + "=" * (-len(s) % 4))
+
+
+def mask_ip(ip: str) -> str:
+    """IP 只保留前两段（1.2.*.* / 2001:db8:*）；域名原样返回"""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 4:
+        return ".".join(ip.split(".")[:2] + ["*", "*"])
+    return ":".join(addr.exploded.split(":")[:2]) + ":*"
 
 
 # --------------------------------------------------------------------------- #
@@ -358,7 +370,7 @@ def test_proxy() -> bool:
             capture_output=True, text=True,
         )
         if r.returncode == 0:
-            log(f"[INFO] 出口 IP: {r.stdout.strip()}")
+            log(f"[INFO] 出口 IP: {mask_ip(r.stdout.strip())}")
             return True
         # curl 退出码: 28=超时, 35=TLS 握手失败, 56=连接被重置
         log(f"[WARN] 尝试 {i}/3 失败 (curl {r.returncode}): {r.stderr.strip()}")
@@ -376,7 +388,7 @@ def main() -> None:
     proto = link.split("://", 1)[0].lower()
     parser = PARSERS.get(proto) or die(f"不支持的协议: {proto}，支持: {', '.join(sorted(PARSERS))}")
     outbound = parser(link)
-    log(f"[INFO] 节点: {outbound['type']} {outbound['server']}:{outbound['server_port']}")
+    log(f"[INFO] 节点: {outbound['type']} {mask_ip(outbound['server'])}:{outbound['server_port']}")
 
     with open(CONFIG, "w", encoding="utf-8") as f:
         json.dump(build_config(outbound), f, ensure_ascii=False, indent=2)
