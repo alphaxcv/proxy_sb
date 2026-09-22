@@ -204,7 +204,7 @@ def parse_vless(link: str) -> dict:
 
     security = q.get("security", "none")
     if security in ("tls", "reality"):
-        tls = tls_block(q.get("sni") or u.hostname, is_insecure(q), q.get("fp") or DEFAULT_FINGERPRINT)
+        tls = tls_block(q.get("sni") or u.hostname, is_insecure(q), q.get("fp") or None)
         if security == "reality":
             tls["reality"] = {
                 "enabled": True,
